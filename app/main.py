@@ -11,6 +11,7 @@ import app.models  # ensures all models are registered with Base
 from contextlib import asynccontextmanager
 from app.routers import mcp
 from app.config import settings
+
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"], enabled=not settings.TESTING)
 
 @asynccontextmanager
@@ -25,7 +26,6 @@ async def lifespan(app: FastAPI):
 
     yield  # <-- app runs here
 
-    # Optional shutdown section (not required now)
 
 app = FastAPI(
     lifespan=lifespan,
@@ -45,28 +45,38 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
+# 1. Enable CORS Middleware FIRST
+# Note: allow_credentials MUST be False when using wildcard allow_origins=["*"]
+origins = [
+    "https://f1-dashboard-1ula.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"],  # Set to `origins` if credentials are required
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
-app.include_router(drivers.router, prefix="/api/v1/drivers", tags=["Drivers"])
-app.include_router(races.router, prefix="/api/v1/races", tags=["Races"])
-app.include_router(pitstops.router, prefix="/api/v1/pitstops", tags=["Pit Stops"])
-app.include_router(strategy.router, prefix="/api/v1/strategy", tags=["Strategy Intelligence"])
-app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytics"])
-app.include_router(mcp.router, prefix="/mcp", tags=["MCP"])
+# 2. Add Rate Limiting Middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
+# 3. Custom Middlewares
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    # Handle preflight OPTIONS requests cleanly
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -82,6 +92,15 @@ async def add_request_id(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     return response
+
+# 4. Include Routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
+app.include_router(drivers.router, prefix="/api/v1/drivers", tags=["Drivers"])
+app.include_router(races.router, prefix="/api/v1/races", tags=["Races"])
+app.include_router(pitstops.router, prefix="/api/v1/pitstops", tags=["Pit Stops"])
+app.include_router(strategy.router, prefix="/api/v1/strategy", tags=["Strategy Intelligence"])
+app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytics"])
+app.include_router(mcp.router, prefix="/mcp", tags=["MCP"])
 
 @app.get("/")
 async def root():
